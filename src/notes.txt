@@ -1,0 +1,1114 @@
+
+pub const Camera = struct 
+{
+    id: c_uint,
+
+    pub fn init(allocator: *Allocator, vertexPath: []const u8, fragmentPath: []const u8) !Shader {
+        // 1. retrieve the vertex/fragment source code from filePath
+        const vShaderFile = try cwd().openFile(vertexPath, OpenFlags{ .read = true, .write = false });
+        defer vShaderFile.close();
+
+        const fShaderFile = try cwd().openFile(fragmentPath, OpenFlags{ .read = true, .write = false });
+        defer fShaderFile.close();
+
+        var vertexCode = try allocator.alloc(u8, try vShaderFile.getEndPos());
+        defer allocator.free(vertexCode);
+
+        var fragmentCode = try allocator.alloc(u8, try fShaderFile.getEndPos());
+        defer allocator.free(fragmentCode);
+
+        const vLen = try vShaderFile.read(vertexCode);
+        const fLen = try fShaderFile.read(fragmentCode);
+
+        // 2. compile shaders
+        // vertex shader
+        const vertex = glCreateShader(GL_VERTEX_SHADER);
+        const vertexSrcPtr: ?[*]const u8 = vertexCode.ptr;
+        glShaderSource(vertex, 1, &vertexSrcPtr, null);
+        glCompileShader(vertex);
+        checkCompileErrors(vertex, "VERTEX");
+        // fragment Shader
+        const fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        const fragmentSrcPtr: ?[*]const u8 = fragmentCode.ptr;
+        glShaderSource(fragment, 1, &fragmentSrcPtr, null);
+        glCompileShader(fragment);
+        checkCompileErrors(fragment, "FRAGMENT");
+        // shader Program
+        const id = glCreateProgram();
+        glAttachShader(id, vertex);
+        glAttachShader(id, fragment);
+        glLinkProgram(id);
+        checkCompileErrors(id, "PROGRAM");
+        // delete the shaders as they're linked into our program now and no longer necessary
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+
+        return Shader{ .id = id };
+    }
+
+    pub fn use(self: Shader) void {
+        glUseProgram(self.id);
+    }
+
+    pub fn setBool(self: Shader, name: [:0]const u8, val: bool) void {
+        // glUniform1i(glGetUniformLocation(ID, name.c_str()), (int)value);
+    }
+
+    pub fn setInt(self: Shader, name: [:0]const u8, val: c_int) void {
+        glUniform1i(glGetUniformLocation(self.id, name), val);
+    }
+
+    pub fn setFloat(self: Shader, name: [:0]const u8, val: f32) void {
+        glUniform1f(glGetUniformLocation(self.id, name), val);
+    }
+
+    pub fn setMat4(self: Shader, name: [:0]const u8, val: Mat4) void {
+        glUniformMatrix4fv(glGetUniformLocation(self.id, name), 1, GL_FALSE, val.vals[0][0..].ptr);
+    }
+
+    pub fn setVec3(self: Shader, name: [:0]const u8, val: Vec3) void {
+        glUniform3f(glGetUniformLocation(self.id, name), val.vals[0], val.vals[1], val.vals[2]);
+    }
+
+    fn checkCompileErrors(shader: c_uint, errType: []const u8) void {
+        var success: c_int = undefined;
+        var infoLog: [1024]u8 = undefined;
+        if (!std.mem.eql(u8, errType, "PROGRAM")) {
+            glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+            if (success == 0) {
+                glGetShaderInfoLog(shader, 1024, null, &infoLog);
+                panic("ERROR::SHADER::{}::COMPILATION_FAILED\n{}\n", .{ errType, infoLog });
+            }
+        } else {
+            glGetShaderiv(shader, GL_LINK_STATUS, &success);
+            if (success == 0) {
+                glGetShaderInfoLog(shader, 1024, null, &infoLog);
+                panic("ERROR::SHADER::LINKING_FAILED\n{}\n", .{infoLog});
+            }
+        }
+    }
+};
+
+
+
+#include "GlWindow.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-value"
+#include "ext/miniz.c"
+#pragma clang diagnostic pop
+#define AA_SAMPLES 4
+namespace
+{
+    int imageWidth = 1024;
+    int imageHeight = 32;
+
+    GlWindow* instance = nullptr;
+
+    void glfwWindowPosCallback(GLFWwindow* glfwHandle, int x, int y)
+    {
+        instance->OnMoveEvent(x,y);
+    }
+
+    void glfwWindowSizeCallback(GLFWwindow* glfwHandle, int width, int height)
+    {
+        instance->OnResizeEvent(width, height);
+    }
+
+    void glfwWindowCloseCallback(GLFWwindow* glfwHandle)
+    {
+        instance->OnCloseEvent();
+    }
+
+    void glfwWindowRefreshCallback(GLFWwindow* glfwHandle)
+    {
+        instance->OnRefreshEvent();
+    }
+
+    void glfwWindowFocusCallback(GLFWwindow* glfwHandle, int focused)
+    {
+        instance->OnFocusEvent(static_cast<bool>(focused));
+    }
+
+    void glfwWindowIconifyCallback(GLFWwindow* glfwHandle, int iconified)
+    {
+        instance->OnIconificationEvent(static_cast<bool>(iconified));
+    }
+
+    void glfwFrameBufferSizeCallback(GLFWwindow* glfwHandle, int width, int height)
+    {
+        instance->OnFramebufferResizeEvent(width, height);
+    }
+
+    void glfwMouseButtonCallback(GLFWwindow* glfwHandle, int button, int action, int mods)
+    {
+        instance->OnMouseButtonEvent(button, action, mods);
+    }
+
+    void glfwCursorPosCallback( GLFWwindow* glfwHandle, double x, double y)
+    {
+        instance->OnMouseMoveEvent(static_cast<int>(x), static_cast<int>(y));
+    }
+
+    void glfwCursorEnterCallback(GLFWwindow* glfwHandle, int entered)
+    {
+        instance->OnCursorEnterEvent(static_cast<bool>(entered));
+    }
+
+    void glfwScrollCallback(GLFWwindow* glfwHandle, double x, double y)
+    {
+        instance->OnMouseScrollEvent(static_cast<int>(-y));
+    }
+
+    void glfwKeyCallback(GLFWwindow* glfwHandle, int key, int scancode, int action, int mods)
+    {
+        instance->OnKeyEvent(key, scancode, action, mods);
+    }
+
+    void glfwCharCallback(GLFWwindow* glfwHandle, unsigned int character)
+    {
+        instance->OnCharEvent(character);
+    }
+
+    void glfwMonitorCallback(GLFWmonitor* glfwMonitorHandle, int connected)
+    {
+        instance->OnMonitorConnectionEvent(glfwMonitorHandle, static_cast<bool>(connected));
+    }
+
+    const char* textVertexShaderSource = GLSL(
+        layout(location = 0) in vec4 vertex;
+        out vec2 v_uvCoords;
+        uniform vec2  u_screenSize;
+        uniform vec2  u_scale;
+        uniform vec2  u_position;
+        uniform float u_depth;
+
+        void main()
+        {
+            vec2 position = vertex.xy;
+            v_uvCoords = vertex.zw;
+            position *= u_scale;
+            position += u_position;
+            position.y = u_screenSize.y - position.y;
+            vec2 half_size = u_screenSize / 2;
+            position = (position-half_size)/half_size;
+            gl_Position = vec4(position, u_depth, 1);
+
+        }
+    );
+
+    const char* textFragmentShaderSource = GLSL(
+        out vec4 fragment;
+        in vec2 v_uvCoords;
+        uniform sampler2D u_texture;
+        uniform vec4 u_color;
+
+        void main()
+        {
+            fragment = texture(u_texture, v_uvCoords) * u_color;
+        }
+    );
+
+
+    const char* quadVertexShaderSource = GLSL(
+        layout(location = 0) in vec2 vertex;
+        uniform vec2  u_screenSize;
+        uniform vec2  u_scale;
+        uniform vec2  u_position;
+        uniform float u_depth;
+
+        void main()
+        {
+            vec2 position = vertex;
+            position *= u_scale;
+            position += u_position;
+            position.y = u_screenSize.y - position.y;
+            vec2 half_size = u_screenSize / 2;
+            position = (position-half_size)/half_size;
+            gl_Position = vec4(position, u_depth, 1);
+        }
+    );
+
+    const char* quadFragmentShaderSource = GLSL(
+        out vec4 fragment;
+        uniform vec4 u_color;
+
+        void main()
+        {
+            fragment = u_color;
+        }
+    );
+
+}
+
+GlWindow* GetWindowInstance()
+{
+    assert(instance != nullptr && "Did not call CreateWindowInstance() before GetWindow()");
+    return instance;
+}
+
+void CreateWindowInstance()
+{
+    if(instance == nullptr)
+    {
+        instance = new GlWindow(960, 600, "map-engine", false);
+    }
+}
+
+void DestroyWindowInstance()
+{
+    if(instance != nullptr)
+    {
+        delete instance;
+    }
+    instance = nullptr;
+}
+
+
+// TODO: VERIFY destructor destroys all resources
+GlWindow::~GlWindow()
+{
+    if(_fontTexture != 0)
+        glDeleteTextures(1, &_fontTexture);
+    if(_textBuffer != 0)
+        glDeleteBuffers(1, &_textBuffer);
+    if(_textVAO != 0)
+        glDeleteVertexArrays(1, &_textVAO);
+	_textProgram.Release();
+
+    if(_quadVao)
+        glDeleteVertexArrays(1, &_quadVao);
+    if(_quadVbo)
+        glDeleteBuffers(1, & _quadVbo);
+    if(_quadIbo)
+        glDeleteBuffers(1, &_quadIbo);
+    if(_postEffectVao)
+        glDeleteVertexArrays(1, &_postEffectVao);
+    if(_postEffectVbo)
+        glDeleteBuffers(1, &_postEffectVbo);
+    if(_postEffectIbo)
+        glDeleteBuffers(1, &_postEffectIbo);
+    if(_fboTex)
+        glDeleteTextures(1, &_fboTex);
+    if(_fbo)
+        glDeleteFramebuffers(1, & _fbo);
+    if(_rbo)
+        glDeleteRenderbuffers(1, &_rbo);
+
+    glfwDestroyWindow(_glfwHandle);
+}
+
+GlWindow::GlWindow(int width, int height, const char* title, bool fullscreen)
+    : _depth(-1.f)
+    , _deltaTime(0.f)
+    , _fps(0)
+    , _fpsTicker(0)
+    , _fpsOneSecondTicker(0.f)
+    , _glfwHandle(nullptr)
+    , _fontTexture(0)
+    , _fbo(0)
+    , _rbo(0)
+    , _fboTex(0)
+    , _postEffectVao(0)
+    , _postEffectVbo(0)
+    , _postEffectIbo(0)
+    , _quadVao(0)
+    , _quadVbo(0)
+    , _quadIbo(0)
+	, _fxaa(false)
+{
+    _mousePos[0] = 0;
+    _mousePos[1] = 0;
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_SAMPLES, 4);
+    auto mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+
+    if(fullscreen)
+        _glfwHandle = glfwCreateWindow(mode->width, mode->height, title, glfwGetPrimaryMonitor(), nullptr);
+    else
+        _glfwHandle = glfwCreateWindow(width, height, title, nullptr, nullptr);
+
+    VERIFY(_glfwHandle != nullptr);
+
+    glfwMakeContextCurrent(_glfwHandle);
+    glfwSwapInterval(1);
+    //glfwSetWindowPos(_glfwHandle, 1500, 100);
+    glfwSetWindowPosCallback(_glfwHandle, &glfwWindowPosCallback);
+    glfwSetWindowSizeCallback(_glfwHandle, &glfwWindowSizeCallback);
+    glfwSetWindowFocusCallback(_glfwHandle, &glfwWindowFocusCallback);
+    glfwSetMouseButtonCallback(_glfwHandle, &glfwMouseButtonCallback);
+    glfwSetWindowCloseCallback(_glfwHandle, &glfwWindowCloseCallback);
+    glfwSetCursorPosCallback(_glfwHandle, &glfwCursorPosCallback);
+    glfwSetScrollCallback(_glfwHandle, &glfwScrollCallback);
+    glfwSetCursorEnterCallback(_glfwHandle, &glfwCursorEnterCallback);
+    glfwSetKeyCallback(_glfwHandle, &glfwKeyCallback);
+    glfwSetCharCallback(_glfwHandle, &glfwCharCallback);
+
+    VERIFY_(ogl_LOAD_SUCCEEDED, ogl_LoadFunctions());
+    VERIFY(ogl_IsVersionGEQ(4,2));
+    TRACE("OpenGL 4.2 Context Created.");
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CW);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+	glEnable(GL_MULTISAMPLE);
+    
+    glDepthRange(0.0f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+    vector<GlShader> shaders;
+    vector<const char*> uniforms = {"u_screenSize", "u_scale", "u_position", "u_depth", "u_color"};
+    shaders.push_back(GlShader::Vertex(textVertexShaderSource));
+    shaders.push_back(GlShader::Fragment(textFragmentShaderSource));
+    _textProgram.Link(shaders);
+    _textProgram.CacheUniforms(uniforms);
+    _textProgram.SetUniform("u_screenSize", GetSize());
+    GlCheck();
+    shaders.clear();
+    shaders.push_back(GlShader::Vertex(quadVertexShaderSource));
+    shaders.push_back(GlShader::Fragment(quadFragmentShaderSource));
+    _quadProgram.Link(shaders);
+    _quadProgram.CacheUniforms(uniforms);
+    _quadProgram.SetUniform("u_screenSize", GetSize());
+
+    // setup text buffer
+    glGenVertexArrays(1, &_textVAO);
+    glBindVertexArray(_textVAO);
+    glGenBuffers(1, &_textBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, _textBuffer);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, static_cast<void*>(0));
+    glBindVertexArray(0);
+
+    // unzip embedded font and store in gpu buffer
+    unsigned long uncompressedSize = static_cast<unsigned long>(imageWidth * imageHeight);
+    uint8_t* uncompressedImage = new uint8_t[uncompressedSize];
+    VERIFY_(Z_OK, uncompress(uncompressedImage, &uncompressedSize, GetSharedMemBuf(),
+            static_cast<unsigned long>(GetSharedMemBufSize())));
+    // expand alpha channel to red green blue alpha channels
+    uint8_t* expandedImage = new uint8_t[imageWidth * imageHeight * 4];
+    int idx = 0;
+    for(int i = 0; i < imageWidth*imageHeight*4; i+=4)
+    {
+        expandedImage[i+0] = 255;
+        expandedImage[i+1] = 255;
+        expandedImage[i+2] = 255;
+        expandedImage[i+3] = uncompressedImage[idx++];
+    }
+
+    glGenTextures(1, &_fontTexture);
+    glBindTexture(GL_TEXTURE_2D, _fontTexture);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, expandedImage);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    delete[] expandedImage;
+    delete[] uncompressedImage;
+
+    _PrepareScreenQuad();
+    _PrepareFxaa(width, height);
+    OnResizeEvent(width, height);
+}
+
+void GlWindow::_RecycleFrameBuffer(int width, int height)
+{
+    if(_fboTex)
+        glDeleteTextures(1, &_fboTex);
+    if(_fbo)
+        glDeleteFramebuffers(1, & _fbo);
+    if(_rbo)
+        glDeleteRenderbuffers(1, &_rbo);
+    
+
+    // generate texture
+    glGenTextures(1, &_fboTex);
+
+    // bind the texture
+    glBindTexture(GL_TEXTURE_2D, _fboTex);
+
+    // set texture parameters
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // set texture content
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+
+
+    // generate renderbuffers
+    glGenRenderbuffers(1, &_rbo);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, _rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+
+    // generate framebuffer
+    glGenFramebuffers(1, &_fbo);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _fboTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _rbo);
+}
+
+void GlWindow::_PrepareFxaa(int width, int height)
+{
+    auto post_effect_vertex_source = GLSL(
+            layout(location = 0) in vec4 vposition;
+            layout(location = 1) in vec2 vtexcoord;
+            out vec2 ftexcoord;
+            void main() {
+            ftexcoord = vtexcoord;
+            gl_Position = vposition;
+            };
+        );
+    auto post_effect_fragment_source = GLSL(
+        uniform sampler2D intexture;
+        in vec2 ftexcoord;
+        layout(location = 0) out vec4 FragColor;
+        
+        float FxaaLuma(vec4 rgba) {
+            return rgba.w;
+        }
+        
+        vec4 FxaaPixelShader(
+            vec2 pos,
+            sampler2D tex,
+            vec2 fxaaQualityRcpFrame,
+            float fxaaQualitySubpix,
+            float fxaaQualityEdgeThreshold,
+            float fxaaQualityEdgeThresholdMin
+        ) {
+            vec2 posM;
+            posM.x = pos.x;
+            posM.y = pos.y;
+            vec4 rgbyM = textureLod(tex, posM, 0.0);
+            float lumaS = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2( 0, 1)));
+            float lumaE = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2( 1, 0)));
+            float lumaN = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2( 0,-1)));
+            float lumaW = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2(-1, 0)));
+            float maxSM = max(lumaS, rgbyM.w);
+            float minSM = min(lumaS, rgbyM.w);
+            float maxESM = max(lumaE, maxSM);
+            float minESM = min(lumaE, minSM);
+            float maxWN = max(lumaN, lumaW);
+            float minWN = min(lumaN, lumaW);
+            float rangeMax = max(maxWN, maxESM);
+            float rangeMin = min(minWN, minESM);
+            float rangeMaxScaled = rangeMax * fxaaQualityEdgeThreshold;
+            float range = rangeMax - rangeMin;
+            float rangeMaxClamped = max(fxaaQualityEdgeThresholdMin, rangeMaxScaled);
+            bool earlyExit = range < rangeMaxClamped;
+            if(earlyExit)
+                return rgbyM;
+        
+            float lumaNW = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2(-1,-1)));
+            float lumaSE = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2( 1, 1)));
+            float lumaNE = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2( 1,-1)));
+            float lumaSW = FxaaLuma(textureLodOffset(tex, posM, 0.0, ivec2(-1, 1)));
+            float lumaNS = lumaN + lumaS;
+            float lumaWE = lumaW + lumaE;
+            float subpixRcpRange = 1.0/range;
+            float subpixNSWE = lumaNS + lumaWE;
+            float edgeHorz1 = (-2.0 * rgbyM.w) + lumaNS;
+            float edgeVert1 = (-2.0 * rgbyM.w) + lumaWE;
+            float lumaNESE = lumaNE + lumaSE;
+            float lumaNWNE = lumaNW + lumaNE;
+            float edgeHorz2 = (-2.0 * lumaE) + lumaNESE;
+            float edgeVert2 = (-2.0 * lumaN) + lumaNWNE;
+            float lumaNWSW = lumaNW + lumaSW;
+            float lumaSWSE = lumaSW + lumaSE;
+            float edgeHorz4 = (abs(edgeHorz1) * 2.0) + abs(edgeHorz2);
+            float edgeVert4 = (abs(edgeVert1) * 2.0) + abs(edgeVert2);
+            float edgeHorz3 = (-2.0 * lumaW) + lumaNWSW;
+            float edgeVert3 = (-2.0 * lumaS) + lumaSWSE;
+            float edgeHorz = abs(edgeHorz3) + edgeHorz4;
+            float edgeVert = abs(edgeVert3) + edgeVert4;
+            float subpixNWSWNESE = lumaNWSW + lumaNESE;
+            float lengthSign = fxaaQualityRcpFrame.x;
+            bool horzSpan = edgeHorz >= edgeVert;
+            float subpixA = subpixNSWE * 2.0 + subpixNWSWNESE;
+            if(!horzSpan) lumaN = lumaW;
+            if(!horzSpan) lumaS = lumaE;
+            if(horzSpan) lengthSign = fxaaQualityRcpFrame.y;
+            float subpixB = (subpixA * (1.0/12.0)) - rgbyM.w;
+            float gradientN = lumaN - rgbyM.w;
+            float gradientS = lumaS - rgbyM.w;
+            float lumaNN = lumaN + rgbyM.w;
+            float lumaSS = lumaS + rgbyM.w;
+            bool pairN = abs(gradientN) >= abs(gradientS);
+            float gradient = max(abs(gradientN), abs(gradientS));
+            if(pairN) lengthSign = -lengthSign;
+            float subpixC = clamp(abs(subpixB) * subpixRcpRange, 0.0, 1.0);
+            vec2 posB;
+            posB.x = posM.x;
+            posB.y = posM.y;
+            vec2 offNP;
+            offNP.x = (!horzSpan) ? 0.0 : fxaaQualityRcpFrame.x;
+            offNP.y = ( horzSpan) ? 0.0 : fxaaQualityRcpFrame.y;
+            if(!horzSpan) posB.x += lengthSign * 0.5;
+            if( horzSpan) posB.y += lengthSign * 0.5;
+            vec2 posN;
+            posN.x = posB.x - offNP.x * 1.0;
+            posN.y = posB.y - offNP.y * 1.0;
+            vec2 posP;
+            posP.x = posB.x + offNP.x * 1.0;
+            posP.y = posB.y + offNP.y * 1.0;
+            float subpixD = ((-2.0)*subpixC) + 3.0;
+            float lumaEndN = FxaaLuma(textureLod(tex, posN, 0.0));
+            float subpixE = subpixC * subpixC;
+            float lumaEndP = FxaaLuma(textureLod(tex, posP, 0.0));
+            if(!pairN) lumaNN = lumaSS;
+            float gradientScaled = gradient * 1.0/4.0;
+            float lumaMM = rgbyM.w - lumaNN * 0.5;
+            float subpixF = subpixD * subpixE;
+            bool lumaMLTZero = lumaMM < 0.0;
+            lumaEndN -= lumaNN * 0.5;
+            lumaEndP -= lumaNN * 0.5;
+            bool doneN = abs(lumaEndN) >= gradientScaled;
+            bool doneP = abs(lumaEndP) >= gradientScaled;
+            if(!doneN) posN.x -= offNP.x * 1.5;
+            if(!doneN) posN.y -= offNP.y * 1.5;
+            bool doneNP = (!doneN) || (!doneP);
+            if(!doneP) posP.x += offNP.x * 1.5;
+            if(!doneP) posP.y += offNP.y * 1.5;
+            if(doneNP) {
+                if(!doneN) lumaEndN = FxaaLuma(textureLod(tex, posN.xy, 0.0));
+                if(!doneP) lumaEndP = FxaaLuma(textureLod(tex, posP.xy, 0.0));
+                if(!doneN) lumaEndN = lumaEndN - lumaNN * 0.5;
+                if(!doneP) lumaEndP = lumaEndP - lumaNN * 0.5;
+                doneN = abs(lumaEndN) >= gradientScaled;
+                doneP = abs(lumaEndP) >= gradientScaled;
+                if(!doneN) posN.x -= offNP.x * 2.0;
+                if(!doneN) posN.y -= offNP.y * 2.0;
+                doneNP = (!doneN) || (!doneP);
+                if(!doneP) posP.x += offNP.x * 2.0;
+                if(!doneP) posP.y += offNP.y * 2.0;
+                if(doneNP) {
+                    if(!doneN) lumaEndN = FxaaLuma(textureLod(tex, posN.xy, 0.0));
+                    if(!doneP) lumaEndP = FxaaLuma(textureLod(tex, posP.xy, 0.0));
+                    if(!doneN) lumaEndN = lumaEndN - lumaNN * 0.5;
+                    if(!doneP) lumaEndP = lumaEndP - lumaNN * 0.5;
+                    doneN = abs(lumaEndN) >= gradientScaled;
+                    doneP = abs(lumaEndP) >= gradientScaled;
+                    if(!doneN) posN.x -= offNP.x * 2.0;
+                    if(!doneN) posN.y -= offNP.y * 2.0;
+                    doneNP = (!doneN) || (!doneP);
+                    if(!doneP) posP.x += offNP.x * 2.0;
+                    if(!doneP) posP.y += offNP.y * 2.0;
+                    if(doneNP) {
+                        if(!doneN) lumaEndN = FxaaLuma(textureLod(tex, posN.xy, 0.0));
+                        if(!doneP) lumaEndP = FxaaLuma(textureLod(tex, posP.xy, 0.0));
+                        if(!doneN) lumaEndN = lumaEndN - lumaNN * 0.5;
+                        if(!doneP) lumaEndP = lumaEndP - lumaNN * 0.5;
+                        doneN = abs(lumaEndN) >= gradientScaled;
+                        doneP = abs(lumaEndP) >= gradientScaled;
+                        if(!doneN) posN.x -= offNP.x * 4.0;
+                        if(!doneN) posN.y -= offNP.y * 4.0;
+                        doneNP = (!doneN) || (!doneP);
+                        if(!doneP) posP.x += offNP.x * 4.0;
+                        if(!doneP) posP.y += offNP.y * 4.0;
+                        if(doneNP) {
+                            if(!doneN) lumaEndN = FxaaLuma(textureLod(tex, posN.xy, 0.0));
+                            if(!doneP) lumaEndP = FxaaLuma(textureLod(tex, posP.xy, 0.0));
+                            if(!doneN) lumaEndN = lumaEndN - lumaNN * 0.5;
+                            if(!doneP) lumaEndP = lumaEndP - lumaNN * 0.5;
+                            doneN = abs(lumaEndN) >= gradientScaled;
+                            doneP = abs(lumaEndP) >= gradientScaled;
+                            if(!doneN) posN.x -= offNP.x * 12.0;
+                            if(!doneN) posN.y -= offNP.y * 12.0;
+                            doneNP = (!doneN) || (!doneP);
+                            if(!doneP) posP.x += offNP.x * 12.0;
+                            if(!doneP) posP.y += offNP.y * 12.0;
+                        }
+                    }
+                }
+            }
+        
+            float dstN = posM.x - posN.x;
+            float dstP = posP.x - posM.x;
+            if(!horzSpan) dstN = posM.y - posN.y;
+            if(!horzSpan) dstP = posP.y - posM.y;
+        
+            bool goodSpanN = (lumaEndN < 0.0) != lumaMLTZero;
+            float spanLength = (dstP + dstN);
+            bool goodSpanP = (lumaEndP < 0.0) != lumaMLTZero;
+            float spanLengthRcp = 1.0/spanLength;
+        
+            bool directionN = dstN < dstP;
+            float dst = min(dstN, dstP);
+            bool goodSpan = directionN ? goodSpanN : goodSpanP;
+            float subpixG = subpixF * subpixF;
+            float pixelOffset = (dst * (-spanLengthRcp)) + 0.5;
+            float subpixH = subpixG * fxaaQualitySubpix;
+        
+            float pixelOffsetGood = goodSpan ? pixelOffset : 0.0;
+            float pixelOffsetSubpix = max(pixelOffsetGood, subpixH);
+            if(!horzSpan) posM.x += pixelOffsetSubpix * lengthSign;
+            if( horzSpan) posM.y += pixelOffsetSubpix * lengthSign;
+            
+            return vec4(textureLod(tex, posM, 0.0).xyz, rgbyM.w);
+        }
+        
+        void main() {    
+            FragColor = FxaaPixelShader(
+                            ftexcoord,
+                            intexture,
+                            1.0/textureSize(intexture,0),
+                            0.75,
+                            0.166,
+                            0.0625
+                        );
+        };
+    );
+
+    vector<GlShader> shaders;
+    shaders.push_back(GlShader::Vertex(post_effect_vertex_source));
+    shaders.push_back(GlShader::Fragment(post_effect_fragment_source));
+    _postProcess.Link(shaders);
+    vector<const char*> uniforms = {"intexture"};
+    _postProcess.CacheUniforms(uniforms);
+
+    // generate and bind the vao
+    glGenVertexArrays(1, &_postEffectVao);
+    glBindVertexArray(_postEffectVao);
+
+    // generate and bind the vertex buffer object
+    glGenBuffers(1, &_postEffectVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, _postEffectVbo);
+
+    // data for a fullscreen quad (this time with texture coords)
+    GLfloat post_effect_vertexData[] = {
+    //  X     Y     Z           U     V
+       1.0f, 1.0f, 0.0f,       1.0f, 1.0f, // vertex 0
+      -1.0f, 1.0f, 0.0f,       0.0f, 1.0f, // vertex 1
+       1.0f,-1.0f, 0.0f,       1.0f, 0.0f, // vertex 2
+      -1.0f,-1.0f, 0.0f,       0.0f, 0.0f, // vertex 3
+    }; // 4 vertices with 5 components (floats) each
+
+    // fill with data
+    glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat)*4*5, post_effect_vertexData, GL_STATIC_DRAW);
+
+
+    // set up generic attrib pointers
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), (char*)0 + 0*sizeof(GLfloat));
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), (char*)0 + 3*sizeof(GLfloat));
+
+
+    // generate and bind the index buffer object
+    glGenBuffers(1, &_postEffectIbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _postEffectIbo);
+
+    GLuint post_effect_indexData[] = {
+        0,1,2, // first triangle
+        2,1,3, // second triangle
+    };
+
+    // fill with data
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLuint)*2*3, post_effect_indexData, GL_STATIC_DRAW);
+
+    // "unbind" vao
+    glBindVertexArray(0);
+}
+
+void GlWindow::_PrepareScreenQuad()
+{
+    assert(_quadVao == 0);
+    // generate and bind the vao
+    glGenVertexArrays(1, &_quadVao);
+    glBindVertexArray(_quadVao);
+
+    // generate and bind the vertex buffer object
+    glGenBuffers(1, &_quadVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, _quadVbo);
+
+    // data for a unit quad
+    GLfloat quad_verts[] = {
+    //  X     Y
+       1.0f, 1.0f, // vertex 0
+      0.0f, 1.0f, // vertex 1
+       1.0f,0.0f, // vertex 2
+      0.0f,0.0f  // vertex 3
+    };
+    // fill with data
+    glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat)*4*2, quad_verts, GL_STATIC_DRAW);
+
+
+    // set up generic attrib pointers
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(GLfloat), (char*)0 + 0*sizeof(GLfloat));
+
+    // generate and bind the index buffer object
+    glGenBuffers(1, &_quadIbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _quadIbo);
+
+    GLuint quad_indices[] = {
+        0,1,2, // first triangle
+        2,1,3, // second triangle
+    };
+
+    // fill with data
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLuint)*2*3, quad_indices, GL_STATIC_DRAW);
+
+    // "unbind" vao
+    glBindVertexArray(0);
+}
+
+void GlWindow::EnableFxaa(bool enable)
+{
+    _fxaa = enable;
+    if(_fxaa)
+        glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+    else
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void GlWindow::SetBackgroundColor(unsigned color)
+{
+    auto rgba { from_hex(color) };
+    glClearColor(rgba[0],rgba[1],rgba[2],rgba[3]);
+}
+
+void GlWindow::SetTitle(const char* title)
+{
+    glfwSetWindowTitle(_glfwHandle, title);
+}
+
+void GlWindow::Resize(int width, int height)
+{
+    glfwSetWindowSize(_glfwHandle, width, height);
+}
+
+void GlWindow::setPosition(int x, int y)
+{
+    glfwSetWindowPos(_glfwHandle, x, y);
+}
+
+
+
+void GlWindow::Refresh()
+{
+    SwapBuffers();
+
+    // bind target framebuffer
+    if(_fxaa)
+        glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+    else
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glfwPollEvents();
+    _depth = -1.f;
+
+    static double lastTime = 0.0;
+    double thisTime = glfwGetTime();
+    _deltaTime = static_cast<float>(thisTime - lastTime);
+    lastTime = thisTime;
+
+    _fpsTicker++;
+    _fpsOneSecondTicker += _deltaTime;
+    if(_fpsOneSecondTicker >= 1.f)
+    {
+        _fps = _fpsTicker;
+        _fpsTicker = 0;
+        _fpsOneSecondTicker = 0.f;
+    }
+}
+
+bool GlWindow::IsOpen()
+{
+    return !(static_cast<bool>(glfwWindowShouldClose(_glfwHandle)));
+}
+
+void GlWindow::SwapBuffers()
+{
+
+    // apply post processing only when fxaa is on
+    if(_fxaa)
+    {
+        // bind the "screen frambuffer"
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // we are not 3d rendering so no depth test
+        glDisable(GL_DEPTH_TEST);
+
+        // use the shader program
+        _postProcess.Bind();
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, _fboTex);
+        _postProcess.SetUniform("intexture", 0);
+        glBindVertexArray(_postEffectVao);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    }
+	
+    glfwSwapBuffers(_glfwHandle);
+}
+
+void GlWindow::DrawQuad(float x, float y, float w, float h, unsigned color, float depth)
+{
+    vec2 scale(w,h);
+    vec2 position(x,y);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    _quadProgram.SetUniform("u_depth", depth);
+    _quadProgram.SetUniform("u_scale", scale);
+    _quadProgram.SetUniform("u_position", position);
+    _quadProgram.SetUniform("u_color", from_hex(color));
+    glBindVertexArray(_quadVao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glDisable(GL_BLEND);
+}
+
+void GlWindow::Write(int x, int y, float scaleX, float scaleY, unsigned color, const char* text, ...)
+{
+    va_list args;
+    va_start(args, text);
+    char* mem = reinterpret_cast<char*>(GetSharedMemBuf());
+    vsnprintf(mem, GetSharedMemBufSize(), text, args);
+    va_end(args);
+
+    auto vertices = GenerateFontVertices(mem);
+    assert(vertices.size() != 0);
+    glBindBuffer(GL_ARRAY_BUFFER, _textBuffer);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(TextVertex), &vertices[0], GL_DYNAMIC_DRAW);
+    vec2 scale(scaleX, scaleY);
+    vec2 position(static_cast<float>(x), static_cast<float>(y));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    _textProgram.SetUniform("u_depth", _depth);
+    _textProgram.SetUniform("u_scale", scale);
+    _textProgram.SetUniform("u_position", position);
+    _textProgram.SetUniform("u_color", from_hex(color));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, _fontTexture);
+    glBindVertexArray(_textVAO);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<int>(vertices.size()));
+    glDisable(GL_BLEND);
+    _depth += 0.01f;
+
+
+};
+
+bool GlWindow::IsKeyPressed(int key)
+{
+    return (glfwGetKey(_glfwHandle, key) == GLFW_PRESS);
+}
+bool GlWindow::IsMouseButtonPressed(int button)
+{
+	return (glfwGetMouseButton(_glfwHandle, button) == GLFW_PRESS);
+}
+
+int GlWindow::RegisterMouseWheelListener(std::function<void(int)> listener)
+{
+    int id = rand();
+    _mouseWheelListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+int GlWindow::RegisterMouseClickListener(std::function<void(int,int,int,int)> listener)
+{
+    int id = rand();
+    _mouseClickListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+int GlWindow::RegisterMouseMotionListener(std::function<void(int,int)> listener)
+{
+    int id = rand();
+    _mouseMotionListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+int GlWindow::RegisterWindowResizeListener(std::function<void(int,int)> listener)
+{
+    int id = rand();
+    _windowResizeListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+int GlWindow::RegisterKeyPressListener(std::function<bool(int,int,int,int)> listener)
+{
+    int id = rand();
+    _keyPressListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+void GlWindow::UnRegisterMouseWheelListener(int id)
+{
+    auto entry = _mouseWheelListeners.find(id);
+    if(entry != _mouseWheelListeners.end())
+    {
+        _mouseWheelListeners.erase(entry);
+    }
+}
+void GlWindow::UnRegisterKeyPressListener(int id)
+{
+    auto entry = _keyPressListeners.find(id);
+    if(entry != _keyPressListeners.end())
+    {
+        _keyPressListeners.erase(entry);
+    }
+}
+void GlWindow::UnRegisterMouseClickListener(int id)
+{
+    auto entry = _mouseClickListeners.find(id);
+    if(entry != _mouseClickListeners.end())
+    {
+        _mouseClickListeners.erase(entry);
+    }
+}
+void GlWindow::UnRegisterMouseMotionListener(int id)
+{
+    auto entry = _mouseMotionListeners.find(id);
+    if(entry != _mouseMotionListeners.end())
+    {
+        _mouseMotionListeners.erase(entry);
+    }
+}
+void GlWindow::UnRegisterWindowResizeListener(int id)
+{
+    auto entry = _windowResizeListeners.find(id);
+    if(entry != _windowResizeListeners.end())
+    {
+        _windowResizeListeners.erase(entry);
+    }
+}
+void GlWindow::UnRegisterCharInputListener(int id)
+{
+    auto entry = _charInputListeners.find(id);
+    if(entry != _charInputListeners.end())
+    {
+        _charInputListeners.erase(entry);
+    }
+}
+
+void GlWindow::OnResizeEvent(int width, int height)
+{
+    glViewport(0, 0, width, height);
+    _textProgram.SetUniform("u_screenSize", vec2(static_cast<float>(width), static_cast<float>(height)));
+    _quadProgram.SetUniform("u_screenSize", vec2(static_cast<float>(width), static_cast<float>(height)));
+    for(auto& listener: _windowResizeListeners)
+        listener.second(width, height);
+    _RecycleFrameBuffer(width, height);
+}
+
+void GlWindow::OnMoveEvent(int x, int y)  {}
+void GlWindow::OnCloseEvent()  {}
+void GlWindow::OnRefreshEvent()  {}
+void GlWindow::OnFocusEvent(bool focused)  {}
+void GlWindow::OnIconificationEvent(bool iconified)
+{
+
+}
+void GlWindow::OnFramebufferResizeEvent(int width, int height)  {}
+
+void GlWindow::OnMouseButtonEvent(int button, int action, int mods)
+{
+    double x, y;
+    glfwGetCursorPos(_glfwHandle, &x, &y);
+    for(auto& listener: _mouseClickListeners)
+        listener.second(button, action, static_cast<int>(x), static_cast<int>(y));
+}
+
+void GlWindow::OnMouseMoveEvent(int x, int y)
+{
+    _mousePos.x = x;
+    _mousePos.y = y;
+    for(auto& listener: _mouseMotionListeners)
+        listener.second(x, y);
+}
+
+
+void GlWindow::OnMouseScrollEvent(int direction)
+{
+    for(auto& listener: _mouseWheelListeners)
+        listener.second(direction);
+}
+
+void GlWindow::OnCursorEnterEvent(bool entered)
+{
+}
+
+void GlWindow::OnKeyEvent(int key, int scancode, int action, int mods)  
+{
+    for(auto& listener: _keyPressListeners)
+        if(listener.second(key, scancode, action, mods))
+            break;
+}
+void GlWindow::OnCharEvent(unsigned int character)
+{
+    for(auto& listener: _charInputListeners)
+        listener.second(character);
+}
+void GlWindow::OnMonitorConnectionEvent(GLFWmonitor* glfwMonitorHandle, bool connected)  {}
+
+glm::ivec2 GlWindow::GetSize() const
+{
+	glm::ivec2 winSize;
+    glfwGetWindowSize(_glfwHandle, &winSize.x, &winSize.y);
+	return winSize;
+}
+
+int GlWindow::RegisterCharInputListener(std::function<void(int)> listener)
+{
+    int id = rand();
+    _charInputListeners.insert(std::make_pair(id, listener));
+    return id;
+}
+
+glm::ivec2 GlWindow::GetMousePos() const
+{
+    return _mousePos;
+}
+
+glm::vec2 GlWindow::GetMousePosF() const
+{
+	return vec2{ _mousePos.x, _mousePos.y };
+}
+
+glm::vec2 GlWindow::GetCenterF() const
+{
+	auto size = GetSize();
+	return vec2{ size.x / 2.f, size.y / 2.f };
+}
+
+
+
+
+
+        glGenVertexArrays(1, &te.vao);
+        defer glDeleteVertexArrays(1, &te.vao);
+        glGenBuffers(1, &VBO);
+        defer glDeleteBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+        defer glDeleteBuffers(1, &EBO);
+        // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+        glBindVertexArray(VAO);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, vertices.len * @sizeOf(f32), &vertices, GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.len * @sizeOf(u32), &indices, GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * @sizeOf(f32), null);
+        glEnableVertexAttribArray(0);
+
+        // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        // remember: do NOT unbind the EBO while a VAO is active as the bound element buffer object IS stored in the VAO; keep the EBO bound.
+        //glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
+        // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
+        glBindVertexArray(0);
