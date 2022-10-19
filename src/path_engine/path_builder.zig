@@ -18,7 +18,6 @@ pub const PathBuilder = struct
         self.width = width;
     }
 
-
     pub fn tick(self: *PathBuilder, context: *FrameContext) void {
         if(!self.enabled)
             return;

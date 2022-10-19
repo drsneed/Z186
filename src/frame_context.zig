@@ -12,13 +12,20 @@ pub const FrameContext = struct
     mouseMotion:bool = false,
     mousePos:Vector2 = Vector2 {.x = 0.0, .y=0.0},
     mouseRel:Vector2 = Vector2 {.x = 0.0, .y=0.0},
+    mouseWorldPos:Vector2 = Vector2 {.x = 0.0, .y = 0.0},
     clicked: [3]bool = [3]bool {false,false,false},
     pressed: [3]bool = [3]bool {false,false,false},
     fps: i32 = 0,
     fpsAux: i32 = 0,
     timer: f32 = 0.0,
     lastTime: f64 = 0.0,
-    glfwHandle: *GLFWwindow = undefined,
+    window: *Window = undefined,
+
+    pub fn init(myWindow: *Window) FrameContext {
+        return FrameContext {
+            .window = myWindow
+        };
+    }
 
     pub fn isButtonDown(self: FrameContext, button: c_int) bool {
         return self.pressed[@intCast(usize,button)];
@@ -31,13 +38,19 @@ pub const FrameContext = struct
         return clicked;
     }
 
-    fn updateButton(self: *FrameContext, window: Window, button: c_int) void
+    fn updateButton(self: *FrameContext, button: c_int) void
     {
         var i = @intCast(usize,button);
         var wasDownLastFrame = self.pressed[i];
-        self.pressed[i] = glfwGetMouseButton(window.handle, button) == GLFW_PRESS;
+        self.pressed[i] = glfwGetMouseButton(self.window.handle, button) == GLFW_PRESS;
         self.clicked[i] = wasDownLastFrame and !self.pressed[i];
     }
+
+    fn updateMouseWorldPos(self: *FrameContext) void
+    {
+        _ = self;
+    }
+
 
     fn updateTime(self: *FrameContext) void 
     {
@@ -54,26 +67,25 @@ pub const FrameContext = struct
         }
     }
 
-    pub fn update(self: *FrameContext, window: Window) void
+    pub fn update(self: *FrameContext) void
     {
         self.updateTime();
-        var screenSize = window.getSize();
+        var screenSize = self.window.getSize();
         self.resized = (screenSize.x != self.screenSize.x or screenSize.y != self.screenSize.y);
         self.screenSize = screenSize;
         var button:c_int = GLFW_MOUSE_BUTTON_LEFT;
         while(button < GLFW_MOUSE_BUTTON_MIDDLE) : (button = button + 1) {
-            self.updateButton(window, button);
+            self.updateButton(button);
         }
-        var mousePos = window.getMousePos();
+        var mousePos = self.window.getMousePos();
         self.mouseRel.x = mousePos.x - self.mousePos.x;
         self.mouseRel.y = mousePos.y - self.mousePos.y;
         self.mouseMotion = mousePos.x != self.mousePos.x or mousePos.y != self.mousePos.y;
         self.mousePos = mousePos;
-        self.glfwHandle = window.handle;
-        if(self.mouseWheel != 0)
-        {
-            debugPrint("mouse wheel: {}\n", .{self.mouseWheel});
-        }
+
+        self.updateMouseWorldPos();
+
+
         // _frameContext.IsKeyPressed = std::bind(&GlWindow::IsKeyPressed, this, std::placeholders::_1);
         // _frameContext.mouseWheel = _lastMouseWheel;
         // //_frameContext.mouseInUiRect = nk_window_is_any_hovered(&_uiContext);

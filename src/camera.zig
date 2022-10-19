@@ -145,42 +145,42 @@ pub const Camera = struct
         var forward = self.right.cross(self.up);
         var velocity = DefaultVelocity * context.deltaTime;
 
-        if(glfwGetKey(context.glfwHandle, 'R') == GLFW_PRESS)
+        if(glfwGetKey(context.window.handle, 'R') == GLFW_PRESS)
         {
             self.rot = self.rot + 5.0;
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'W') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'W') == GLFW_PRESS)
         {
             var moveAmount = forward.mulScalar(velocity);
             self.position = self.position.add(moveAmount);
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'S') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'S') == GLFW_PRESS)
         {
             var moveAmount = forward.mulScalar(-velocity);
             self.position = self.position.add(moveAmount);
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'A') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'A') == GLFW_PRESS)
         {
             var moveAmount = self.right.mulScalar(velocity);
             self.position = self.position.add(moveAmount);
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'D') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'D') == GLFW_PRESS)
         {
             var moveAmount = self.right.mulScalar(-velocity);
             self.position = self.position.add(moveAmount);
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'Q') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'Q') == GLFW_PRESS)
         {
             var moveAmount = self.up.mulScalar(velocity * 16.0);
             self.position = self.position.add(moveAmount);
             self.dirty = true;
         }
-        if (glfwGetKey(context.glfwHandle, 'E') == GLFW_PRESS)
+        if (glfwGetKey(context.window.handle, 'E') == GLFW_PRESS)
         {
             var moveAmount = self.up.mulScalar(-velocity * 16.0);
             self.position = self.position.add(moveAmount);

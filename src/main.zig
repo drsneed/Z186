@@ -16,7 +16,7 @@ usingnamespace @import("path_engine/path_builder.zig");
 const allocator = std.heap.c_allocator;
 // ------------------------------------------------------------------
 
-var frameContext = FrameContext {};
+var frameContext:FrameContext = undefined;
 
 
 // ------------------------------------------------------------------
@@ -37,6 +37,9 @@ pub fn main() !void
     const bgColor = fromHex(0x222222FF);
     glClearColor(bgColor.vals[0], bgColor.vals[1], bgColor.vals[2], bgColor.vals[3]);
     glCheck();
+
+
+    frameContext = FrameContext.init(&window);
 
     var bitmapFont = try BitmapFont.init(allocator, "data" ++ sep ++ "fonts" ++ sep ++ "Tahoma" ++ sep ++ "tahoma.fnt");
     defer bitmapFont.deinit();
@@ -76,7 +79,7 @@ pub fn main() !void
 
     while (glfwWindowShouldClose(window.handle) == 0) 
     {
-        frameContext.update(window);
+        frameContext.update();
         window.tick(&frameContext);
         camera.tick(frameContext);
         bitmapFont.renderer.tick(frameContext);
@@ -100,7 +103,7 @@ pub fn main() !void
 
         try imageRenderer.render(textureId, 200.0, 200.0, 256.0, 256.0, angle);
 
-        bitmapFont.render(textPosition, 0x000000FF, "We are doing a thing.", .{}) catch |err| {
+        bitmapFont.render(textPosition, 0x0807A0FF, "We are doing a thing.", .{}) catch |err| {
             debugPrint("Error rendering text: {s}\n", .{err});
             std.os.exit(0);
         };
